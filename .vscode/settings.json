@@ -1,0 +1,8 @@
+{
+    "C_Cpp.autoAddFileAssociations": true,
+    "C_Cpp.autocomplete": "Default",
+    "C_Cpp.enhancedColorization": "Enabled",
+    "C_Cpp.formatting": "Default",
+    "C_Cpp.intelliSenseEngine": "Default",
+    "C_Cpp.errorSquiggles": "Enabled"
+}
