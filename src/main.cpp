@@ -1,3 +1,26 @@
+/*
+ *   Copyright (c) 2021 Benoni Jiang
+ *   All rights reserved.
+
+ *   Permission is hereby granted, free of charge, to any person obtaining a copy
+ *   of this software and associated documentation files (the "Software"), to deal
+ *   in the Software without restriction, including without limitation the rights
+ *   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ *   copies of the Software, and to permit persons to whom the Software is
+ *   furnished to do so, subject to the following conditions:
+ 
+ *   The above copyright notice and this permission notice shall be included in all
+ *   copies or substantial portions of the Software.
+ 
+ *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ *   SOFTWARE.
+ */
+
 #include "Version.h"
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
@@ -9,9 +32,9 @@
 #include <ESP8266httpUpdate.h>
 
 #include <ESP8266mDNS.h>
-#include <ESP8266WebServer.h>
+// #include <ESP8266WebServer.h>
 
-#include <ESP8266HTTPUpdateServer.h>
+// #include <ESP8266HTTPUpdateServer.h>
 
 #include <ArduinoOTA.h>
 
@@ -22,6 +45,46 @@
 
 #include <Wire.h>
 //#include <ArduinoJson.h>
+
+#include "SimpleButton.h"
+
+using namespace simplebutton;
+
+#include "multilog.h"
+
+#include "jled.h"
+
+#include <LittleFS.h>
+#include <ESPAsyncWiFiManager.h>       //https://github.com/tzapu/WiFiManager
+
+//for LED status
+#include <Ticker.h>
+Ticker ticker;
+
+// #include <IotWebConf.h>
+// #include <IotWebConfTParameter.h>
+
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncElegantOTA.h>
+#include <DNSServer.h>
+
+void tick()
+{
+  //toggle state
+  int state = digitalRead(BUILTIN_LED);  // get the current state of GPIO1 pin
+  digitalWrite(BUILTIN_LED, !state);     // set pin to the opposite state
+}
+
+//gets called when WiFiManager enters configuration mode
+void configModeCallback (AsyncWiFiManager *myWiFiManager) {
+  Serial.println("Entered config mode");
+  Serial.println(WiFi.softAPIP());
+  //if you used auto generated SSID, print it
+  Serial.println(myWiFiManager->getConfigPortalSSID());
+  //entered config mode, make led toggle faster
+  ticker.attach(0.2, tick);
+}
 
 // #define _TASK_TIMECRITICAL      // Enable monitoring scheduling overruns
 #define _TASK_SLEEP_ON_IDLE_RUN // Enable 1 ms SLEEP_IDLE powerdowns between tasks if no callback methods were invoked during the pass
@@ -64,9 +127,13 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds, utcupdateInterv
 
 ESP8266WiFiMulti WiFiMulti;
 
-ESP8266WebServer server(80);
+// ESP8266WebServer server(80);
 
-ESP8266HTTPUpdateServer httpUpdater;
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+DNSServer dns;
+
+// ESP8266HTTPUpdateServer httpUpdater;
 
 const char* username = "login";
 const char* password = "Passw0rd";
@@ -108,12 +175,61 @@ void upgrade(String host, String port);
 void handleLED();
 void sendresponder(int code, String xx, String action, String status, String message);
 
+ButtonPullup* b = NULL;
+
+// auto led_breathe = JLed(relay_pin).Breathe(1500).Repeat(6).DelayAfter(500);
+auto led_breathe = JLed(relay_pin).Blink(200, 200).Forever();
+
+MultiLog xMultiLog(IPAddress(192,168,0,255), 34200, &Serial);
+
+FS& gfs = LittleFS;
+//FS& gfs = SDFS;
+
+void handleRoot();
+
+void configSaved();
+
+// bool formValidator(iotwebconf::WebRequestWrapper* webRequestWrapper);
+
+static const char chooserValues[] [128] = {"tcp", "http", "mqtt", "websockets", "modbus"};
+static const char chooserNames[] [128] = {"TCP", "HTTP",  "MQTT", "WEBSOCKETS", "MODBUS TCP"};
+
+// IotWebConf iotWebConf("test", &)
+
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(status_pin, INPUT_PULLUP);
-//  digitalWrite(status_pin, HIGH);
+  //  digitalWrite(status_pin, HIGH);
   pinMode(relay_pin, OUTPUT);
-//  digitalWrite(LED_BUILTIN,HIGH);
+  //  digitalWrite(LED_BUILTIN,HIGH);
+  // b = new Button(status_pin, true);
+  pinMode(status_pin, INPUT_PULLUP);
+  if (digitalRead(status_pin) == LOW) {
+    ticker.attach(0.05, tick);
+    for (int i = 0; i <10 ;i++) {
+      delay(1000);
+      if( i > 9 ) {
+        ticker.detach();
+        // wifiManager.resetSettings();
+        delay(3000);
+        // ESP.reset();
+      }
+    }
+  }
+
+  b = new ButtonPullup(status_pin);
+  b->setOnDoubleClicked([] () {
+    // Serial.println("DoubleClick");
+    xMultiLog.println("DoubleClick");
+
+  }, 100, 1000);
+
+  b->setOnClicked([] () {
+    xMultiLog.println("Click");
+  }, 500);
+
+  b->setOnHolding([] () {
+    xMultiLog.println("Holding");
+  }, 3000);
   if (digitalRead(relay_pin) == 1) {
           digitalWrite(relay_pin, LOW);
           }
@@ -132,18 +248,49 @@ void setup() {
     delay(1000);
   }
 
-  WiFi.mode(WIFI_STA);
-  WiFiMulti.addAP(STASSID, STAPSK);
-  WiFiMulti.addAP("AGV-roaming", "roam5678");
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
-    WiFiMulti.run();
+  //set led pin as output
+  pinMode(BUILTIN_LED, OUTPUT);
+  // start ticker with 0.5 because we start in AP mode and try to connect
+  ticker.attach(0.6, tick);
+
+  //WiFiManager
+  AsyncWiFiManager wifiManager(&server, &dns);
+  //Local intialization. Once its business is done, there is no need to keep it around
+  //reset settings - for testing
+  // wifiManager.resetSettings();
+
+  //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
+  wifiManager.setAPCallback(configModeCallback);
+
+  //fetches ssid and pass and tries to connect
+  //if it does not connect it starts an access point with the specified name
+  //here  "AutoConnectAP"
+  //and goes into a blocking loop awaiting configuration
+  if (!wifiManager.autoConnect()) {
+    Serial.println("failed to connect and hit timeout");
+    //reset and try again, or maybe put it to deep sleep
+    ESP.reset();
+    delay(1000);
   }
+
+  //if you get here you have connected to the WiFi
+  Serial.println("connected...yeey :)");
+  ticker.detach();
+  //keep LED on
+  digitalWrite(BUILTIN_LED, LOW);
+
+  // WiFi.mode(WIFI_STA);
+  // WiFiMulti.addAP(STASSID, STAPSK);
+  // WiFiMulti.addAP("AGV-roaming", "roam5678");
+  // while (WiFi.status() != WL_CONNECTED) {
+  //   Serial.print(".");
+  //   delay(500);
+  //   WiFiMulti.run();
+  // }
   
 
   //delay(3000);
-  httpUpdater.setup(&server);
+  // httpUpdater.setup(&server);
   // upgrade("192.168.0.142", "8080");
   timeClient.begin();
   timeClient.update();
@@ -153,18 +300,23 @@ void setup() {
   } else {
     Serial.println("Error setting up MDNS responder!");
   }
+  if ( !gfs.begin() ) {
+    xMultiLog.println("Fs mount Fails");
+  } else {
+    xMultiLog.println("FS mount OK");
+  }
+  xMultiLog.println(gfs.exists("/img"));
 
+  // Route for root / web page
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+            { request->send(gfs, "/index.html", "text/html", false); });
 
-  server.on("/", []() {
-    // if (!server.authenticate(username, password)) {
-      // return server.requestAuthentication();
-    // }
-    Serial.println(server.uri());
- //   Serial.println(server.
-    server.send(200, "text/plain", "Login OK");
-  });
-  server.on("/door.lc", HTTP_POST, handleLED);
-  server.on("/door.lc", HTTP_GET, handleLED);
+  server.serveStatic("/", LittleFS, "/");
+
+  // server.on("/door.lc", HTTP_POST, handleLED);
+  // server.on("/door.lc", HTTP_GET, handleLED);
+  // Start ElegantOTA
+  AsyncElegantOTA.begin(&server);
   server.begin();
 
   Serial.print("Open http://");
@@ -196,7 +348,8 @@ void setup() {
   //     else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
   //     else if (error == OTA_END_ERROR) Serial.println("End Failed");
   //   });
-
+  // tcp.begin();
+  // dav.begin(&server, &gfs);
   ArduinoOTA.begin();
 }
 
@@ -204,10 +357,14 @@ void setup() {
 void loop() {
   // wait for WiFi connection
   
-  MDNS.update();
-  server.handleClient();
+  // MDNS.update();
+  // server.handleClient();
+  AsyncElegantOTA.loop();
   ArduinoOTA.handle();
-  ts.execute();
+  // ts.execute();
+  b->update();
+  led_breathe.Update();
+  // dav.handleClient();
 
 //  Serial.print(timeClient.getHours());
 //  Serial.print(":");
@@ -245,7 +402,7 @@ void blink1CB() {
   }
 
   if ( tBlink1.isLastIteration() ) {
-    tBlink2.restartDelayed( 2 * TASK_SECOND );
+    // tBlink2.restartDelayed( 2 * TASK_SECOND );
     LEDOff();
   }
 }
@@ -269,93 +426,93 @@ void blinkwififails() {
   }
 }
 
-void handleLED() {                          // If a POST request is made to URI /LED
-  if (!server.authenticate(username, password)) {
-      return server.requestAuthentication();
-    }
-  //digitalWrite(led,!digitalRead(led));      // Change the state of the LED
-//  server.sendHeader("Location","/");        // Add a header to respond with a new location for the browser to go to the home page again
-//  server.send(303);                         // Send it back to the browser with an HTTP status 303 (See Other) to redirect
-  Serial.println(server.uri());
-  Serial.println(server.arg(1));
-  if (server.argName(0) == "action") {
-    String arg = server.arg(0);
-    if (arg == "open") {
-      if (0) {
-        sendresponder(400, "-3", "open", "open", "Door is alread open");
-        }
-      else {
-      digitalWrite(relay_pin,HIGH);
-      sendresponder(200, "0", "open", "opening", "Door opened");
-      }
-      }
-    else if (arg == "close") {
-      if (0) {
-//        digitalWrite(LED_BUILTIN,HIGH);
-        sendresponder(400, "-4", "close", "closed", "Door is already closed");
+// void handleLED() {                          // If a POST request is made to URI /LED
+//   if (!server.authenticate(username, password)) {
+//       return server.requestAuthentication();
+//     }
+//   //digitalWrite(led,!digitalRead(led));      // Change the state of the LED
+// //  server.sendHeader("Location","/");        // Add a header to respond with a new location for the browser to go to the home page again
+// //  server.send(303);                         // Send it back to the browser with an HTTP status 303 (See Other) to redirect
+//   Serial.println(server.uri());
+//   Serial.println(server.arg(1));
+//   if (server.argName(0) == "action") {
+//     String arg = server.arg(0);
+//     if (arg == "open") {
+//       if (0) {
+//         sendresponder(400, "-3", "open", "open", "Door is alread open");
+//         }
+//       else {
+//       digitalWrite(relay_pin,HIGH);
+//       sendresponder(200, "0", "open", "opening", "Door opened");
+//       }
+//       }
+//     else if (arg == "close") {
+//       if (0) {
+// //        digitalWrite(LED_BUILTIN,HIGH);
+//         sendresponder(400, "-4", "close", "closed", "Door is already closed");
         
-        }
-        else {
-          digitalWrite(relay_pin,LOW);
-          sendresponder(200, "0", "close", "closing", "Door Closed");
-          }    
-      }
-    else if (arg == "status") {
-        if (digitalRead(relay_pin) == 1) {
-          sendresponder(200, "0", "status", "opened", "");
-          }
-         else {
-          sendresponder(200, "0", "status", "closed", "");
-          }
-      }
-    else if (arg == "reboot") {
-        sendresponder(200, "0", "reboot", "none", "device will reboot");
-        if (digitalRead(relay_pin) == 1) {
-          digitalWrite(relay_pin, LOW);
-          }
-        delay(1000);
-        ESP.restart();
-      }
-    else if (arg == "upgrade") {
-      String host;
-        if (server.args() >1 && server.argName(1) == "host") {
+//         }
+//         else {
+//           digitalWrite(relay_pin,LOW);
+//           sendresponder(200, "0", "close", "closing", "Door Closed");
+//           }    
+//       }
+//     else if (arg == "status") {
+//         if (digitalRead(relay_pin) == 1) {
+//           sendresponder(200, "0", "status", "opened", "");
+//           }
+//          else {
+//           sendresponder(200, "0", "status", "closed", "");
+//           }
+//       }
+//     else if (arg == "reboot") {
+//         sendresponder(200, "0", "reboot", "none", "device will reboot");
+//         if (digitalRead(relay_pin) == 1) {
+//           digitalWrite(relay_pin, LOW);
+//           }
+//         delay(1000);
+//         ESP.restart();
+//       }
+//     else if (arg == "upgrade") {
+//       String host;
+//         if (server.args() >1 && server.argName(1) == "host") {
           
-//        sendresponder(200, "0", "upgrade", "none", "device will upgrade, dont shutdown power!");
-//        delay(1000);
-        host = server.arg(1);
-        upgrade(host, "8080");
-        }
-        else if (server.args() >2 && server.argName(2) == "port") {
-          upgrade(host, server.arg(2));
-          }
-        else {
-          upgrade("192.168.0.142", "8080");
-          }
-      }
-     else {
+// //        sendresponder(200, "0", "upgrade", "none", "device will upgrade, dont shutdown power!");
+// //        delay(1000);
+//         host = server.arg(1);
+//         upgrade(host, "8080");
+//         }
+//         else if (server.args() >2 && server.argName(2) == "port") {
+//           upgrade(host, server.arg(2));
+//           }
+//         else {
+//           upgrade("192.168.0.142", "8080");
+//           }
+//       }
+//      else {
       
-      }
-    }
-}
-void sendresponder(int code, String error, String action, String doorstatus, String mes) {
-  String ret = "{\"error\":"+error;
-  ret += ", \"door\":1, \"controlPin\":2, \"statusPin\":1, \"action\":\"";
-  ret += action;
-  if (mes != "") {
-    ret += "\", \"message\":\"";
-    ret += mes;
-    }
-  ret += "\", \"status\":\"";
-  ret += doorstatus;
-  ret += "\", \"relay\":\"0\", \"hold time\":\"forever\", \"device id\":\"";
-  ret += ESP.getChipId();
-  ret = ret+"\", \"firmware version\": \""+Version;
-  ret += "\", \"UTC Time\":\"";
-  ret = ret+timeClient.getHours()+":"+timeClient.getMinutes()+":"+timeClient.getSeconds();
-  ret += "\"}";
+//       }
+//     }
+// }
+// void sendresponder(int code, String error, String action, String doorstatus, String mes) {
+//   String ret = "{\"error\":"+error;
+//   ret += ", \"door\":1, \"controlPin\":2, \"statusPin\":1, \"action\":\"";
+//   ret += action;
+//   if (mes != "") {
+//     ret += "\", \"message\":\"";
+//     ret += mes;
+//     }
+//   ret += "\", \"status\":\"";
+//   ret += doorstatus;
+//   ret += "\", \"relay\":\"0\", \"hold time\":\"forever\", \"device id\":\"";
+//   ret += ESP.getChipId();
+//   ret = ret+"\", \"firmware version\": \""+Version;
+//   ret += "\", \"UTC Time\":\"";
+//   ret = ret+timeClient.getHours()+":"+timeClient.getMinutes()+":"+timeClient.getSeconds();
+//   ret += "\"}";
   
-   server.send(code, "application/json", ret);
- }
+//    server.send(code, "application/json", ret);
+//  }
 
  void upgrade(String host, String port) {
  if ((WiFiMulti.run() == WL_CONNECTED)) {
