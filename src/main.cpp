@@ -54,6 +54,11 @@ using namespace simplebutton;
 
 #include "jled.h"
 
+#include "FastLED.h"
+#define DATA_PIN 12
+#define NUM_LEDS 1
+CRGB leds[NUM_LEDS];
+
 #include <LittleFS.h>
 #include <ESPAsyncWiFiManager.h>       //https://github.com/tzapu/WiFiManager
 
@@ -72,8 +77,8 @@ Ticker ticker;
 void tick()
 {
   //toggle state
-  int state = digitalRead(BUILTIN_LED);  // get the current state of GPIO1 pin
-  digitalWrite(BUILTIN_LED, !state);     // set pin to the opposite state
+  int state = digitalRead(LED_BUILTIN);  // get the current state of GPIO1 pin
+  digitalWrite(LED_BUILTIN, !state);     // set pin to the opposite state
 }
 
 //gets called when WiFiManager enters configuration mode
@@ -153,7 +158,7 @@ Scheduler ts;
    Approach 1: LED is driven by the boolean variable; false = OFF, true = ON
 */
 #define PERIOD1 500
-#define DURATION 10000
+#define DURATION 100000
 void blink1CB();
 Task tBlink1 ( PERIOD1 * TASK_MILLISECOND, DURATION / PERIOD1, &blink1CB, &ts, true );
 #define PERIOD2 200
@@ -161,6 +166,13 @@ Task tBlink1 ( PERIOD1 * TASK_MILLISECOND, DURATION / PERIOD1, &blink1CB, &ts, t
 void blinkwififails();
 Task tBlink2 ( PERIOD2 * TASK_MILLISECOND, DURATION2 / PERIOD2, &blinkwififails, &ts, false );
 
+
+#include <WS2812FX.h>
+
+#define LED_COUNT 1
+#define LED_PIN 12
+
+WS2812FX ws2812fx = WS2812FX(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 // This example is now configured to use the automated signing support
 // present in the Arduino IDE by having a "private.key" and "public.key"
@@ -249,7 +261,7 @@ void setup() {
   }
 
   //set led pin as output
-  pinMode(BUILTIN_LED, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
   // start ticker with 0.5 because we start in AP mode and try to connect
   ticker.attach(0.6, tick);
 
@@ -277,7 +289,7 @@ void setup() {
   Serial.println("connected...yeey :)");
   ticker.detach();
   //keep LED on
-  digitalWrite(BUILTIN_LED, LOW);
+  digitalWrite(LED_BUILTIN, LOW);
 
   // WiFi.mode(WIFI_STA);
   // WiFiMulti.addAP(STASSID, STAPSK);
@@ -351,6 +363,14 @@ void setup() {
   // tcp.begin();
   // dav.begin(&server, &gfs);
   ArduinoOTA.begin();
+
+  // FastLED.addLeds<WS2812, DATA_PIN, RGB>(leds, NUM_LEDS);
+
+  ws2812fx.init();
+  ws2812fx.setBrightness(100);
+  ws2812fx.setSpeed(1000);
+  ws2812fx.setMode(FX_MODE_RAINBOW_CYCLE);
+  ws2812fx.start();
 }
 
 
@@ -363,7 +383,8 @@ void loop() {
   ArduinoOTA.handle();
   // ts.execute();
   b->update();
-  led_breathe.Update();
+  ws2812fx.service();
+  // led_breathe.Update();
   // dav.handleClient();
 
 //  Serial.print(timeClient.getHours());
@@ -376,11 +397,16 @@ void loop() {
 }
 
 inline void LEDOn() {
-  digitalWrite( LED_BUILTIN, HIGH );
+  // digitalWrite( LED_BUILTIN, HIGH );
+  // leds[0] = CRGB::Red;
+  leds[0] = CRGB::Blue;
+  FastLED.show();
 }
 
 inline void LEDOff() {
-  digitalWrite( LED_BUILTIN, LOW );
+  // digitalWrite( LED_BUILTIN, LOW );
+  leds[0] = CRGB::Black;
+  FastLED.show();
 }
 
 // === 1 =======================================
