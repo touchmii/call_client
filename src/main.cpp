@@ -37,6 +37,7 @@
 // #include <ESP8266HTTPUpdateServer.h>
 
 #include <ArduinoOTA.h>
+#include <ArduinoJson.h>
 
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -61,6 +62,7 @@ CRGB leds[NUM_LEDS];
 
 #include <LittleFS.h>
 #include <ESPAsyncWiFiManager.h>       //https://github.com/tzapu/WiFiManager
+#include <asyncHTTPrequest.h>
 
 //for LED status
 #include <Ticker.h>
@@ -74,12 +76,22 @@ Ticker ticker;
 #include <AsyncElegantOTA.h>
 #include <DNSServer.h>
 
+// #include <IotWebConf.h>
+
 void tick()
 {
   //toggle state
   int state = digitalRead(LED_BUILTIN);  // get the current state of GPIO1 pin
   digitalWrite(LED_BUILTIN, !state);     // set pin to the opposite state
 }
+
+char http_server[40] = "192.168.0.89";
+char http_port[6] = "8081";
+char device_number[6] = "1";
+
+bool shouldSaveConfig = false;
+
+MultiLog xMultiLog(IPAddress(192,168,0,255), 34200, &Serial);
 
 //gets called when WiFiManager enters configuration mode
 void configModeCallback (AsyncWiFiManager *myWiFiManager) {
@@ -90,6 +102,13 @@ void configModeCallback (AsyncWiFiManager *myWiFiManager) {
   //entered config mode, make led toggle faster
   ticker.attach(0.2, tick);
 }
+
+void saveConfigCallback() {
+  xMultiLog.println("Should save config");
+  shouldSaveConfig = true;
+}
+
+asyncHTTPrequest request;
 
 // #define _TASK_TIMECRITICAL      // Enable monitoring scheduling overruns
 #define _TASK_SLEEP_ON_IDLE_RUN // Enable 1 ms SLEEP_IDLE powerdowns between tasks if no callback methods were invoked during the pass
@@ -120,6 +139,10 @@ const String ret1 = ", \"door\":1, \"controlPin\":2, \"statusPin\":1, \"action\"
 
 const int relay_pin = 4;
 const int status_pin = 5;
+const int button1_pin = 14;
+const int button2_pin = 12;
+const int button3_pin = 13;
+bool button3_status = false;
 
 WiFiUDP ntpUDP;
 
@@ -170,7 +193,7 @@ Task tBlink2 ( PERIOD2 * TASK_MILLISECOND, DURATION2 / PERIOD2, &blinkwififails,
 #include <WS2812FX.h>
 
 #define LED_COUNT 1
-#define LED_PIN 12
+#define LED_PIN 15
 
 WS2812FX ws2812fx = WS2812FX(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -187,12 +210,15 @@ void upgrade(String host, String port);
 void handleLED();
 void sendresponder(int code, String xx, String action, String status, String message);
 
+ButtonPullup* sensor = NULL;
 ButtonPullup* b = NULL;
+ButtonPullup* b2 = NULL;
+ButtonPullup* b3 = NULL;
+// ButtonPullup* b4 = NULL;
 
 // auto led_breathe = JLed(relay_pin).Breathe(1500).Repeat(6).DelayAfter(500);
 auto led_breathe = JLed(relay_pin).Blink(200, 200).Forever();
 
-MultiLog xMultiLog(IPAddress(192,168,0,255), 34200, &Serial);
 
 FS& gfs = LittleFS;
 //FS& gfs = SDFS;
@@ -207,6 +233,104 @@ static const char chooserValues[] [128] = {"tcp", "http", "mqtt", "websockets", 
 static const char chooserNames[] [128] = {"TCP", "HTTP",  "MQTT", "WEBSOCKETS", "MODBUS TCP"};
 
 // IotWebConf iotWebConf("test", &)
+void sendRequest(String button, String action);
+void requestCB(void* optParm, asyncHTTPrequest* request, int readyState);
+
+#include <WebSocketsClient.h>
+
+#include <Hash.h>
+
+WebSocketsClient webSocket;
+
+#define USE_SERIAL xMultiLog
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+
+	switch(type) {
+		case WStype_DISCONNECTED:
+			USE_SERIAL.printf("[WSc] Disconnected!\n");
+			break;
+		case WStype_CONNECTED: {
+			USE_SERIAL.printf("[WSc] Connected to url: %s\n", payload);
+
+			// send message to server when Connected
+			webSocket.sendTXT("Connected");
+		}
+			break;
+		case WStype_TEXT:
+			USE_SERIAL.printf("[WSc] get text: %s\n", payload);
+
+			// send message to server
+			// webSocket.sendTXT("message here");
+			break;
+		case WStype_BIN:
+			USE_SERIAL.printf("[WSc] get binary length: %u\n", length);
+			hexdump(payload, length);
+
+			// send data to server
+			// webSocket.sendBIN(payload, length);
+			break;
+        case WStype_PING:
+            // pong will be send automatically
+            USE_SERIAL.printf("[WSc] get ping\n");
+            break;
+        case WStype_PONG:
+            // answer to a ping we send
+            USE_SERIAL.printf("[WSc] get pong\n");
+            break;
+    }
+
+}
+
+int carry_times = 1;
+bool carry_start = false;
+
+// mode number
+
+int carry_mode = 0;
+
+void sendWebSocket(String name, String action) {
+  int device_num = 0;
+  if (name == "sensor" and carry_start == true) {
+    if (carry_mode % 4 == 1) {
+      carry_times += 1;
+      if (carry_times % 2 == 0) {
+        device_num = 1;
+      } else {
+        device_num = 2;
+      }
+    } else if (carry_mode % 4 == 2) {
+      device_num = 2;
+    } else if (carry_mode % 4 == 3) {
+      device_num = 3;
+    }
+  }
+  String txt = String("device_number: ") + device_num + " button name: " + name + " action: " + action;
+  webSocket.sendTXT(txt.c_str());
+}
+
+
+void setMode(int a = 0) {
+  if (button3_status == false and a != 0) {
+    carry_mode += 1;
+    carry_times = 1;
+  } else if (button3_status == true) {
+    carry_start = true;
+    ws2812fx.setColor(GREEN);
+  }
+  if (button3_status == false) {
+    ws2812fx.setMode(FX_MODE_STATIC);
+    if (carry_mode % 4 == 1) {
+      ws2812fx.setColor(PINK);
+    } else if(carry_mode % 4 == 2) {
+      ws2812fx.setColor(YELLOW);
+    } else if (carry_mode % 4 == 3) {
+      ws2812fx.setColor(PURPLE);
+    } else {
+      ws2812fx.setColor(ORANGE);
+    }
+  }
+}
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -215,36 +339,113 @@ void setup() {
   //  digitalWrite(LED_BUILTIN,HIGH);
   // b = new Button(status_pin, true);
   pinMode(status_pin, INPUT_PULLUP);
-  if (digitalRead(status_pin) == LOW) {
-    ticker.attach(0.05, tick);
-    for (int i = 0; i <10 ;i++) {
-      delay(1000);
-      if( i > 9 ) {
-        ticker.detach();
-        // wifiManager.resetSettings();
-        delay(3000);
-        // ESP.reset();
-      }
-    }
-  }
+  pinMode(button1_pin, INPUT_PULLUP);
+  pinMode(button2_pin, INPUT_PULLUP);
+  pinMode(button3_pin, INPUT_PULLUP);
+  // pinMode
+  // if (digitalRead(status_pin) == LOW) {
+  //   ticker.attach(0.05, tick);
+  //   for (int i = 0; i <10 ;i++) {
+  //     delay(1000);
+  //     if( i > 9 ) {
+  //       ticker.detach();
+  //       // wifiManager.resetSettings();
+  //       delay(3000);
+  //       // ESP.reset();
+  //     }
+  //   }
+  // }
 
-  b = new ButtonPullup(status_pin);
-  b->setOnDoubleClicked([] () {
-    // Serial.println("DoubleClick");
-    xMultiLog.println("DoubleClick");
+  b = new ButtonPullup(button1_pin);
+  // b->setOnDoubleClicked([] () {
+  //   // Serial.println("DoubleClick");
+  //   xMultiLog.println("Button1 DoubleClick");
 
-  }, 100, 1000);
+  // }, 100, 1000);
 
   b->setOnClicked([] () {
-    xMultiLog.println("Click");
-  }, 500);
+    if (button3_status == true) {
+      carry_start = false;
+      ws2812fx.setColor(ORANGE);
+    }
+    sendWebSocket("stop", "click");
+    xMultiLog.println("Button1 Click");
+  }, 50);
 
   b->setOnHolding([] () {
-    xMultiLog.println("Holding");
+    sendWebSocket("stop", "holding");
+    xMultiLog.println("Button1 Holding");
   }, 3000);
-  if (digitalRead(relay_pin) == 1) {
-          digitalWrite(relay_pin, LOW);
-          }
+  sensor = new ButtonPullup(status_pin);
+  // b->setOnDoubleClicked([] () {
+  //   // Serial.println("DoubleClick");
+  //   xMultiLog.println("Button1 DoubleClick");
+
+  // }, 100, 1000);
+
+  sensor->setOnClicked([] () {
+    // sendRequest("sensor", "click");
+    if (button3_status == true) {
+      sendWebSocket("sensor", "click");
+      xMultiLog.println("Sonsor Click");
+    }
+    
+  }, 50);
+
+  sensor->setOnHolding([] () {
+    // sendRequest("sensor", "hold");
+    if (button3_status == true) {
+      sendWebSocket("sensor", "holding");
+      xMultiLog.println("Sonsor Holding");
+    }
+  }, 3000);
+  b2 = new ButtonPullup(button2_pin);
+  // b2->setOnDoubleClicked([] () {
+  //   // Serial.println("2DoubleClick");
+  //   xMultiLog.println("Button2 DoubleClick");
+
+  // }, 100, 1000);
+
+  b2->setOnClicked([] () {
+    setMode(1);
+    sendWebSocket("start", "click");
+    xMultiLog.println("Button2 Click");
+  }, 50);
+
+  b2->setOnHolding([] () {
+    sendWebSocket("start", "holding");
+    xMultiLog.println("Button2 Holding");
+  }, 3000);
+  b3 = new ButtonPullup(button3_pin);
+  // b2->setOnDoubleClicked([] () {
+  //   // Serial.println("2DoubleClick");
+  //   xMultiLog.println("Button2 DoubleClick");
+
+  // }, 100, 1000);
+
+  b3->setOnClicked([] () {
+    sendWebSocket("mode", "click");
+    xMultiLog.println("Button3 Click");
+  }, 50);
+
+  b3->setOnHolding([] () {
+    sendWebSocket("mode", "holding");
+    xMultiLog.println("Button3 Holding");
+  }, 3000);
+
+  b3->setOnPushed([] () {
+    button3_status = true;
+    ws2812fx.setColor(BLUE);
+    ws2812fx.setMode(FX_MODE_STATIC);
+  });
+  b3->setOnReleased([] () {
+    button3_status = false;
+    setMode();
+    // ws2812fx.setColor(ORANGE);
+    // ws2812fx.setMode(FX_MODE_STATIC);
+  });
+
+  
 
   Serial.begin(115200);
   // Serial.setDebugOutput(true);
@@ -265,14 +466,54 @@ void setup() {
   // start ticker with 0.5 because we start in AP mode and try to connect
   ticker.attach(0.6, tick);
 
+  if (gfs.begin()) {
+    if (gfs.exists("config.json")) {
+      File configFile = gfs.open("config.json", "r");
+      if (configFile) {
+        size_t size = configFile.size();
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        DynamicJsonDocument json(1024);
+        // doc.
+        DeserializationError error = deserializeJson(json, buf.get());
+        // json.printTo(Serial);
+        if (!error) {
+          strcpy(http_server, json["http_server"]);
+          strcpy(http_port, json["http_port"]);
+          strcpy(device_number, json["device_number"]);
+        } else
+        {
+          Serial.println("Failed to parse json config");
+        }
+        
+      }
+    }
+  } else {
+    Serial.println("failed to mount FS");
+  }
+
+  AsyncWiFiManagerParameter custom_http_server("server", "http server", http_server, 40);
+  AsyncWiFiManagerParameter custom_http_port("port","http port", http_port, 5);
+  AsyncWiFiManagerParameter custom_device_number("device number", "device number", device_number, 5);
   //WiFiManager
   AsyncWiFiManager wifiManager(&server, &dns);
   //Local intialization. Once its business is done, there is no need to keep it around
-  //reset settings - for testing
-  // wifiManager.resetSettings();
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
 
   //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
   wifiManager.setAPCallback(configModeCallback);
+  
+  // reset settings - for testing
+  // wifiManager.resetSettings();
+  
+  if (digitalRead(button1_pin) == 0 && digitalRead(button2_pin == 0)) {
+          //reset settings - for testing
+    wifiManager.resetSettings();
+  }
+  wifiManager.addParameter(&custom_http_server);
+  wifiManager.addParameter(&custom_http_port);
+  wifiManager.addParameter(&custom_device_number);
 
   //fetches ssid and pass and tries to connect
   //if it does not connect it starts an access point with the specified name
@@ -285,11 +526,33 @@ void setup() {
     delay(1000);
   }
 
+
   //if you get here you have connected to the WiFi
   Serial.println("connected...yeey :)");
   ticker.detach();
   //keep LED on
   digitalWrite(LED_BUILTIN, LOW);
+
+  strcpy(http_server, custom_http_server.getValue());
+  strcpy(http_port, custom_http_port.getValue());
+  strcpy(device_number, custom_device_number.getValue());
+
+  if (shouldSaveConfig) {
+    xMultiLog.println("save config");
+    DynamicJsonDocument doc(1024);
+    // DeserializationError error = deserializeJson(doc, json);
+    doc["http_server"] = http_server;
+    doc["http_port"] = http_port;
+    doc["device_number"] = device_number;
+
+    File configFile = LittleFS.open("/config.json", "w");
+    if (!configFile) {
+      xMultiLog.println("failed to open config file for writing");
+    }
+    serializeJson(doc, xMultiLog);
+    serializeJson(doc, configFile);
+    configFile.close();
+  }
 
   // WiFi.mode(WIFI_STA);
   // WiFiMulti.addAP(STASSID, STAPSK);
@@ -312,12 +575,15 @@ void setup() {
   } else {
     Serial.println("Error setting up MDNS responder!");
   }
-  if ( !gfs.begin() ) {
-    xMultiLog.println("Fs mount Fails");
-  } else {
-    xMultiLog.println("FS mount OK");
-  }
-  xMultiLog.println(gfs.exists("/img"));
+
+  // request.setDebug(true);
+  // request.onReadyStateChange(requestCB);
+  // if ( !gfs.begin() ) {
+  //   xMultiLog.println("Fs mount Fails");
+  // } else {
+  //   xMultiLog.println("FS mount OK");
+  // }
+  // xMultiLog.println(gfs.exists("/img"));
 
   // Route for root / web page
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -362,6 +628,25 @@ void setup() {
   //   });
   // tcp.begin();
   // dav.begin(&server, &gfs);
+
+  // server address, port and URL
+	webSocket.begin(http_server, 8081, "/call_client");
+
+	// event handler
+	webSocket.onEvent(webSocketEvent);
+
+	// use HTTP Basic Authorization this is optional remove if not needed
+	// webSocket.setAuthorization("user", "Password");
+
+	// try ever 5000 again if connection has failed
+	webSocket.setReconnectInterval(5000);
+  
+  // start heartbeat (optional)
+  // ping server every 15000 ms
+  // expect pong from server within 3000 ms
+  // consider connection disconnected if pong is not received 2 times
+  webSocket.enableHeartbeat(15000, 3000, 2);
+
   ArduinoOTA.begin();
 
   // FastLED.addLeds<WS2812, DATA_PIN, RGB>(leds, NUM_LEDS);
@@ -369,7 +654,7 @@ void setup() {
   ws2812fx.init();
   ws2812fx.setBrightness(100);
   ws2812fx.setSpeed(1000);
-  ws2812fx.setMode(FX_MODE_RAINBOW_CYCLE);
+  ws2812fx.setMode(FX_MODE_BREATH);
   ws2812fx.start();
 }
 
@@ -383,7 +668,11 @@ void loop() {
   ArduinoOTA.handle();
   // ts.execute();
   b->update();
+  b2->update();
+  b3->update();
+  sensor->update();
   ws2812fx.service();
+  webSocket.loop();
   // led_breathe.Update();
   // dav.handleClient();
 
@@ -394,6 +683,36 @@ void loop() {
 //  Serial.println(timeClient.getSeconds());
   
 //  delay(1000);
+}
+
+void sendRequest(String button, String action)
+{ 
+  static bool requestOpenResult = false;
+
+  if (request.readyState() == 0  || request.readyState() == 4) {
+    // String url = String.format("http://%s:%d/api/v1/call_client?button=%s&action=%s", )
+    String url = String("http://") + http_server + ":" + http_port + "/api/v1/call_client?device_number=" + device_number + "&button=" + button + "&action=" + action;
+    requestOpenResult = request.open("GET", url.c_str());
+    if (requestOpenResult) {
+      request.send();
+    } else {
+      xMultiLog.println("Can't send bad request");
+    }
+  }
+}
+
+void requestCB(void* optParm, asyncHTTPrequest* request, int readyState) 
+{
+  // (void) optParm;
+  
+  if (readyState == 4) 
+  {
+    xMultiLog.println("\n**************************************");
+    xMultiLog.println(request->responseText());
+    xMultiLog.println("**************************************");
+    
+    // request->setDebug(false);
+  }
 }
 
 inline void LEDOn() {

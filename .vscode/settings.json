@@ -4,5 +4,6 @@
     "C_Cpp.enhancedColorization": "Enabled",
     "C_Cpp.formatting": "Default",
     "C_Cpp.intelliSenseEngine": "Default",
-    "C_Cpp.errorSquiggles": "Enabled"
+    "C_Cpp.errorSquiggles": "Enabled",
+    "python.pythonPath": "/Library/Frameworks/Python.framework/Versions/3.7/bin/python3"
 }
