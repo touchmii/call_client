@@ -316,16 +316,17 @@ void setMode(int a = 0) {
     carry_times = 1;
   } else if (button3_status == true) {
     carry_start = true;
-    ws2812fx.setColor(GREEN);
+    ws2812fx.setMode(FX_MODE_STATIC);
+    // ws2812fx.setColor(GREEN);
   }
   if (button3_status == false) {
-    ws2812fx.setMode(FX_MODE_STATIC);
+    ws2812fx.setMode(FX_MODE_BREATH);
     if (carry_mode % 4 == 1) {
-      ws2812fx.setColor(PINK);
+      ws2812fx.setColor(PURPLE);
     } else if(carry_mode % 4 == 2) {
       ws2812fx.setColor(YELLOW);
     } else if (carry_mode % 4 == 3) {
-      ws2812fx.setColor(PURPLE);
+      ws2812fx.setColor(BLUE);
     } else {
       ws2812fx.setColor(ORANGE);
     }
@@ -366,7 +367,8 @@ void setup() {
   b->setOnClicked([] () {
     if (button3_status == true) {
       carry_start = false;
-      ws2812fx.setColor(ORANGE);
+      ws2812fx.setMode(FX_MODE_BLINK);
+      // ws2812fx.setColor(ORANGE);
     }
     sendWebSocket("stop", "click");
     xMultiLog.println("Button1 Click");
@@ -435,8 +437,8 @@ void setup() {
 
   b3->setOnPushed([] () {
     button3_status = true;
-    ws2812fx.setColor(BLUE);
-    ws2812fx.setMode(FX_MODE_STATIC);
+    // ws2812fx.setColor(BLUE);
+    ws2812fx.setMode(FX_MODE_BLINK);
   });
   b3->setOnReleased([] () {
     button3_status = false;
@@ -652,8 +654,9 @@ void setup() {
   // FastLED.addLeds<WS2812, DATA_PIN, RGB>(leds, NUM_LEDS);
 
   ws2812fx.init();
-  ws2812fx.setBrightness(100);
-  ws2812fx.setSpeed(1000);
+  ws2812fx.setBrightness(255);
+  ws2812fx.setSpeed(500);
+  ws2812fx.setColor(ORANGE);
   ws2812fx.setMode(FX_MODE_BREATH);
   ws2812fx.start();
 }
