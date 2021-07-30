@@ -1,3 +1,5 @@
+[![PlatformIO CI](https://github.com/touchmii/call_client/actions/workflows/main.yml/badge.svg)](https://github.com/touchmii/call_client/actions/workflows/main.yml)
+
 ###无线按钮盒
 应用场景，AGV叫料器，远程设备启动开关。
 
